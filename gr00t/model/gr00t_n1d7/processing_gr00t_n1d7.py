@@ -238,7 +238,7 @@ class Gr00tN1d7Processor(BaseProcessor):
         extra_augmentation_config: dict | None = None,
         use_relative_action: bool = False,
         embodiment_id_mapping: dict[str, int] | None = None,
-        transformers_loading_kwargs: dict = {"trust_remote_code": True},
+        transformers_loading_kwargs: dict | None = None,
         # State augmentation
         exclude_state: bool = False,
         state_dropout_prob: float = 0.0,
@@ -246,6 +246,8 @@ class Gr00tN1d7Processor(BaseProcessor):
         use_mean_std: bool = False,
         letter_box_transform: bool = False,
     ):
+        if transformers_loading_kwargs is None:
+            transformers_loading_kwargs = {"trust_remote_code": False}
         self.modality_configs = parse_modality_configs(modality_configs)
 
         # Initialize StateActionProcessor for state/action normalization
@@ -844,7 +846,7 @@ class Gr00tN1d7Processor(BaseProcessor):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path: str | Path, **kwargs):
         transformers_loading_kwargs = kwargs.pop(
-            "transformers_loading_kwargs", {"trust_remote_code": True}
+            "transformers_loading_kwargs", {"trust_remote_code": False}
         )
         hub_keys = (
             "_commit_hash",

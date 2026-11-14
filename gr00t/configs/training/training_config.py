@@ -94,7 +94,9 @@ class TrainingConfig:
     gradient_checkpointing: bool = False
 
     # Transformers loading parameters
-    transformers_trust_remote_code: bool = True
+    # Remote model repositories can execute repository-provided Python during
+    # loading. Require an explicit opt-in for trusted, pinned model sources.
+    transformers_trust_remote_code: bool = False
     transformers_local_files_only: bool = False
     transformers_cache_dir: str | None = None
     transformers_access_token: str | None = None  # Access token for HuggingFace Hub

@@ -609,7 +609,7 @@ class Gr00tN1d7(PreTrainedModel):
     def __init__(
         self,
         config: Gr00tN1d7Config,
-        transformers_loading_kwargs: dict = {"trust_remote_code": True},
+        transformers_loading_kwargs: dict | None = None,
     ):
         """
         Initialize Gr00tN1d7 model.
@@ -627,6 +627,8 @@ class Gr00tN1d7(PreTrainedModel):
               During inference (e.g., from_pretrained), defaults are used.
         """
         super().__init__(config)
+        if transformers_loading_kwargs is None:
+            transformers_loading_kwargs = {"trust_remote_code": False}
         self.config = config
 
         backbone_cls = get_backbone_cls(config)
