@@ -29,15 +29,39 @@ pipeline is bottlenecked by data loading or by the model's computation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import queue
+import random
 import threading
 from typing import Any, Optional
 
+import numpy as np
 import torch
 from transformers.trainer import TRAINER_STATE_NAME, Trainer, TrainerState, get_last_checkpoint
 from transformers.trainer_callback import TrainerCallback
+from transformers.trainer_pt_utils import set_rng_state_for_device
+
+
+@contextlib.contextmanager
+def _safe_rng_load_globals():
+    """Allow only NumPy state types needed by a weights-only RNG checkpoint."""
+    safe_globals = getattr(torch.serialization, "safe_globals", None)
+    if safe_globals is None:
+        yield
+        return
+
+    np_core = getattr(np, "_core", np.core)
+    allowlist = [np_core.multiarray._reconstruct, np.ndarray, np.dtype]
+    # NumPy >=1.25 exposes a concrete UInt32 dtype class that the safe
+    # unpickler needs when restoring the RNG state tuple.
+    try:
+        allowlist.append(type(np.dtype(np.uint32)))
+    except (TypeError, ValueError):
+        pass
+    with safe_globals(allowlist):
+        yield
 
 
 class ProfCallback(TrainerCallback):
@@ -216,6 +240,62 @@ class Gr00tTrainer(Trainer):
             dataloader_params["multiprocessing_context"] = self.multiprocessing_context
 
         return torch.utils.data.DataLoader(self.train_dataset, **dataloader_params)
+
+    def _load_rng_state(self, checkpoint):
+        """Restore RNG state without executing pickle code from a checkpoint.
+
+        Transformers <5.0.0 calls ``torch.load`` without ``weights_only=True``
+        for ``rng_state*.pth``. A checkpoint writer with access to the training
+        output directory could otherwise execute arbitrary Python during resume.
+        Keep the normal resume semantics while using PyTorch's restricted
+        unpickler and a narrow NumPy allowlist.
+        """
+        if checkpoint is None:
+            return
+
+        if self.args.world_size > 1:
+            process_index = self.args.process_index
+            rng_file = os.path.join(checkpoint, f"rng_state_{process_index}.pth")
+            if not os.path.isfile(rng_file):
+                logging.info(
+                    "Didn't find an RNG file for process %s; reproducibility is not guaranteed.",
+                    process_index,
+                )
+                return
+        else:
+            rng_file = os.path.join(checkpoint, "rng_state.pth")
+            if not os.path.isfile(rng_file):
+                logging.info("Didn't find an RNG file; reproducibility is not guaranteed.")
+                return
+
+        try:
+            with _safe_rng_load_globals():
+                checkpoint_rng_state = torch.load(
+                    rng_file,
+                    map_location="cpu",
+                    weights_only=True,
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                "Refusing to restore an unsafe or incompatible RNG checkpoint. "
+                "Use a checkpoint created by this project with PyTorch weights-only "
+                "support, or remove rng_state*.pth before resuming."
+            ) from exc
+
+        if not isinstance(checkpoint_rng_state, dict):
+            raise RuntimeError("RNG checkpoint must contain a state dictionary")
+        try:
+            random.setstate(checkpoint_rng_state["python"])
+            np.random.set_state(checkpoint_rng_state["numpy"])
+            torch.random.set_rng_state(checkpoint_rng_state["cpu"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("RNG checkpoint has an invalid state schema") from exc
+
+        if torch.cuda.is_available() and "cuda" in checkpoint_rng_state:
+            is_distributed = self.args.world_size > 1
+            set_rng_state_for_device(
+                "CUDA", torch.cuda, checkpoint_rng_state, is_distributed
+            )
 
     def train(
         self,
