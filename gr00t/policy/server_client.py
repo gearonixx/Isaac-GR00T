@@ -54,7 +54,16 @@ class MsgSerializer:
         object_hook = functools.partial(
             MsgSerializer._safe_decode, chain=MsgSerializer._decode_custom
         )
-        return msgpack.unpackb(data, object_hook=object_hook, raw=False)
+        # msgpack-python releases before 1.2.3 can retain decoded map values
+        # when strict_map_key rejects a non-string key.  Disabling that
+        # rejection keeps malformed input on the normal bounded decode path;
+        # the dependency floor in pyproject.toml carries the upstream fix.
+        return msgpack.unpackb(
+            data,
+            object_hook=object_hook,
+            raw=False,
+            strict_map_key=False,
+        )
 
     @staticmethod
     def _safe_encode(obj, chain=None):

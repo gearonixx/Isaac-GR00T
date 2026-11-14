@@ -196,6 +196,11 @@ class TestMsgSerializer:
         data = {"key": "value", "number": 42}
         assert MsgSerializer.from_bytes(MsgSerializer.to_bytes(data)) == data
 
+    def test_decode_non_string_map_key_without_retention_regression(self):
+        """Malformed map keys must not trigger msgpack's strict-key path."""
+        payload = msgpack.packb({42: b"bounded"}, use_bin_type=True)
+        assert MsgSerializer.from_bytes(payload) == {42: b"bounded"}
+
     def test_roundtrip_numpy(self):
         arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         result = MsgSerializer.from_bytes(MsgSerializer.to_bytes(arr))
