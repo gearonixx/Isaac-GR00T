@@ -27,7 +27,7 @@ import numpy as np
 from gr00t.data.dataset.lerobot_episode_loader import LeRobotEpisodeLoader
 from gr00t.data.types import ModalityConfig
 
-from .policy import BasePolicy
+from .policy import BasePolicy, InferenceResourceLimits
 
 
 class ReplayPolicy(BasePolicy):
@@ -62,6 +62,7 @@ class ReplayPolicy(BasePolicy):
         execution_horizon: int,
         *,
         strict: bool = True,
+        resource_limits: InferenceResourceLimits | None = None,
     ):
         """Initialize the Replay Policy.
 
@@ -71,8 +72,10 @@ class ReplayPolicy(BasePolicy):
                 that specify temporal sampling and data keys to load
             execution_horizon: Policy execution horizon during inference. Will determine the number of steps to skip per get_action call.
             strict: Whether to enforce strict input validation (default: True)
+            resource_limits: Optional per-request batch, image, and text budgets.
         """
         super().__init__(strict=strict)
+        self.resource_limits = resource_limits or InferenceResourceLimits()
         self.dataset_path = Path(dataset_path)
         self.modality_configs = modality_configs
         self.episode_index = 0
@@ -105,6 +108,22 @@ class ReplayPolicy(BasePolicy):
 
         # Preload all actions from the episode
         self._preload_actions()
+
+    def _enforce_resource_limits(self, observation: dict[str, Any]) -> None:
+        """Apply resource budgets even when strict structural validation is off."""
+        for video_key, batched_video in observation.get("video", {}).items():
+            if isinstance(batched_video, np.ndarray):
+                if batched_video.ndim == 5:
+                    self.resource_limits.check_batch_size(int(batched_video.shape[0]))
+                    self.resource_limits.check_video_shape(batched_video.shape, key=video_key)
+        for language_key, batched_language in observation.get("language", {}).items():
+            if isinstance(batched_language, list):
+                self.resource_limits.check_batch_size(len(batched_language))
+                for batch_item in batched_language:
+                    if isinstance(batch_item, list):
+                        for text in batch_item:
+                            if isinstance(text, str):
+                                self.resource_limits.check_text(text, key=language_key)
 
     def _preload_actions(self) -> None:
         """Preload all actions from the current episode for efficient replay."""
@@ -186,6 +205,9 @@ class ReplayPolicy(BasePolicy):
                 f"Video key '{video_key}' must be a numpy array of shape (B, T, H, W, C), got {batched_video.shape}"
             )
 
+            self.resource_limits.check_batch_size(int(batched_video.shape[0]))
+            self.resource_limits.check_video_shape(batched_video.shape, key=video_key)
+
             assert batched_video.shape[1] == len(self.modality_configs["video"].delta_indices), (
                 f"Video key '{video_key}'s horizon must be {len(self.modality_configs['video'].delta_indices)}. Got {batched_video.shape[1]}"
             )
@@ -262,6 +284,7 @@ class ReplayPolicy(BasePolicy):
                 assert isinstance(batch_item[0], str), (
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
                 )
+                self.resource_limits.check_text(batch_item[0], key=language_key)
 
     def check_action(self, action: dict[str, Any]) -> None:
         """Validate that the action has the correct structure and types.
@@ -321,14 +344,16 @@ class ReplayPolicy(BasePolicy):
         """
         # Infer batch size from observation
         if observation is not None:
+            self._enforce_resource_limits(observation)
             first_video_key = self.modality_configs["video"].modality_keys[0]
             batch_size = observation["video"][first_video_key].shape[0]
         # If batch size is not provided in observation, check if it's provided in options
-        elif "batch_size" in options:
+        elif options is not None and "batch_size" in options:
             batch_size = options["batch_size"]
         else:
             batch_size = 1
             print("No batch size provided, using default batch size of 1")
+        self.resource_limits.check_batch_size(int(batch_size))
         # Note that this can differ form the execution horizon, as the policy can predict more steps than what's actually executed.
         action_horizon = (
             self.modality_configs["action"].delta_indices[-1]

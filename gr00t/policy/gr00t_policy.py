@@ -31,7 +31,7 @@ from gr00t.data.embodiment_tags import FINETUNE_ONLY_TAGS, POSTTRAIN_TAGS, Embod
 from gr00t.data.interfaces import BaseProcessor
 from gr00t.data.types import MessageType, ModalityConfig, VLAStepData
 
-from .policy import BasePolicy, PolicyWrapper
+from .policy import BasePolicy, InferenceResourceLimits, PolicyWrapper
 
 
 def _rec_to_dtype(x: Any, dtype: torch.dtype) -> Any:
@@ -87,6 +87,7 @@ class Gr00tPolicy(BasePolicy):
         *,
         device: int | str,
         strict: bool = True,
+        resource_limits: InferenceResourceLimits | None = None,
     ):
         """Initialize the Gr00t Policy.
 
@@ -96,11 +97,13 @@ class Gr00tPolicy(BasePolicy):
             model_path: Path to the pretrained model checkpoint directory
             device: Device to run the model on (e.g., 'cuda:0', 0, 'cpu')
             strict: Whether to enforce strict input validation (default: True)
+            resource_limits: Optional per-request batch, image, and text budgets.
         """
         # Import this to register all models.
         import gr00t.model  # noqa: F401
 
         super().__init__(strict=strict)
+        self.resource_limits = resource_limits or InferenceResourceLimits()
         if isinstance(embodiment_tag, str):
             embodiment_tag = EmbodimentTag.resolve(embodiment_tag)
         model_dir = Path(model_path)
@@ -174,6 +177,22 @@ class Gr00tPolicy(BasePolicy):
         assert len(language_keys) >= 1, "At least one language key is required"
         assert len(language_delta_indices) == 1, "Only one language delta index is supported"
         self.language_key = language_keys[0]
+
+    def _enforce_resource_limits(self, observation: dict[str, Any]) -> None:
+        """Apply resource budgets even when strict structural validation is off."""
+        for video_key, batched_video in observation.get("video", {}).items():
+            if isinstance(batched_video, np.ndarray):
+                if batched_video.ndim == 5:
+                    self.resource_limits.check_batch_size(int(batched_video.shape[0]))
+                    self.resource_limits.check_video_shape(batched_video.shape, key=video_key)
+        for language_key, batched_language in observation.get("language", {}).items():
+            if isinstance(batched_language, list):
+                self.resource_limits.check_batch_size(len(batched_language))
+                for batch_item in batched_language:
+                    if isinstance(batch_item, list):
+                        for text in batch_item:
+                            if isinstance(text, str):
+                                self.resource_limits.check_text(text, key=language_key)
 
     def _unbatch_observation(self, value: dict[str, Any]) -> list[dict[str, Any]]:
         """Unbatch a batched observation into a list of single observations.
@@ -283,6 +302,9 @@ class Gr00tPolicy(BasePolicy):
                 f"Video key '{video_key}' must be a numpy array of shape (B, T, H, W, C), got {batched_video.shape}"
             )
 
+            self.resource_limits.check_batch_size(int(batched_video.shape[0]))
+            self.resource_limits.check_video_shape(batched_video.shape, key=video_key)
+
             # Verify temporal dimension matches the expected horizon from config
             assert batched_video.shape[1] == len(self.modality_configs["video"].delta_indices), (
                 f"Video key '{video_key}'s horizon must be {len(self.modality_configs['video'].delta_indices)}. Got {batched_video.shape[1]}"
@@ -377,6 +399,7 @@ class Gr00tPolicy(BasePolicy):
                 assert isinstance(batch_item[0], str), (
                     f"Language batch item must be a string. Got {type(batch_item[0])}"
                 )
+                self.resource_limits.check_text(batch_item[0], key=language_key)
 
     def _get_action(
         self, observation: dict[str, Any], options: dict[str, Any] | None = None
@@ -397,6 +420,7 @@ class Gr00tPolicy(BasePolicy):
         Returns:
             Tuple of (actions_dict, info_dict)
         """
+        self._enforce_resource_limits(observation)
         # Step 1: Split batched observation into individual observations
         unbatched_observations = self._unbatch_observation(observation)
         processed_inputs = []

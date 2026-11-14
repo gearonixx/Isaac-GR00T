@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gr00t.data.types import ModalityConfig
+from gr00t.policy.policy import InferenceResourceLimits
 import numpy as np
 import pytest
 import torch
@@ -159,6 +160,22 @@ class TestGr00tPolicyCheckObservation:
         obs = _make_observation()
         obs["video"][VIDEO_KEYS[0]] = obs["video"][VIDEO_KEYS[0]].astype(np.float32)
         with pytest.raises(AssertionError):
+            policy.check_observation(obs)
+
+    def test_batch_budget_rejects_excessive_batch(self, policy):
+        policy.resource_limits = InferenceResourceLimits(max_batch_size=1)
+        with pytest.raises(ValueError, match="batch size"):
+            policy.check_observation(_make_observation(batch_size=2))
+
+    def test_image_budget_rejects_excessive_area(self, policy):
+        policy.resource_limits = InferenceResourceLimits(max_image_pixels=128 * 128)
+        with pytest.raises(ValueError, match="image area"):
+            policy.check_observation(_make_observation())
+
+    def test_text_budget_rejects_excessive_instruction(self, policy):
+        policy.resource_limits = InferenceResourceLimits(max_text_bytes=8)
+        obs = _make_observation()
+        with pytest.raises(ValueError, match="text is"):
             policy.check_observation(obs)
 
 

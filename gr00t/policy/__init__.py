@@ -14,11 +14,12 @@
 # limitations under the License.
 
 from .gr00t_policy import Gr00tPolicy
-from .policy import BasePolicy, PolicyWrapper
+from .policy import BasePolicy, InferenceResourceLimits, PolicyWrapper
 
 
 __all__ = [
     "BasePolicy",
     "Gr00tPolicy",
+    "InferenceResourceLimits",
     "PolicyWrapper",
 ]

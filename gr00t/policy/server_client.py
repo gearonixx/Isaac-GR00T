@@ -27,7 +27,7 @@ import zmq
 from gr00t.data.types import ModalityConfig
 from gr00t.data.utils import to_json_serializable
 
-from .policy import BasePolicy
+from .policy import BasePolicy, InferenceResourceLimits
 
 
 class MsgSerializer:
@@ -158,6 +158,7 @@ class PolicyServer:
         host: str = "*",
         port: int = 5555,
         api_token: str = None,
+        resource_limits: InferenceResourceLimits | None = None,
     ):
         self.policy = policy
         self.host = host
@@ -169,6 +170,7 @@ class PolicyServer:
         self.socket.bind(f"tcp://{host}:{port}")
         self._endpoints: dict[str, EndpointHandler] = {}
         self.api_token = api_token
+        self.resource_limits = resource_limits or InferenceResourceLimits()
 
         # Register the ping endpoint by default
         self.register_endpoint("ping", self._handle_ping, requires_input=False)
@@ -238,6 +240,16 @@ class PolicyServer:
             return True  # No token required
         return request.get("api_token") == self.api_token
 
+    def _serialize_response(self, result: Any) -> bytes:
+        """Serialize a response while bounding bytes sent to a client."""
+        payload = MsgSerializer.to_bytes(result)
+        if len(payload) > self.resource_limits.max_response_bytes:
+            raise ValueError(
+                f"Response size {len(payload)} bytes exceeds the configured limit "
+                f"{self.resource_limits.max_response_bytes} bytes"
+            )
+        return payload
+
     def run(self):
         addr = self.socket.getsockopt_string(zmq.LAST_ENDPOINT)
         print(f"Server is ready and listening on {addr}")
@@ -249,7 +261,7 @@ class PolicyServer:
                 # Validate token before processing request
                 if not self._validate_token(request):
                     self.socket.send(
-                        MsgSerializer.to_bytes({"error": "Unauthorized: Invalid API token"})
+                        self._serialize_response({"error": "Unauthorized: Invalid API token"})
                     )
                     continue
 
@@ -264,17 +276,32 @@ class PolicyServer:
                     if handler.requires_input
                     else handler.handler()
                 )
-                self.socket.send(MsgSerializer.to_bytes(result))
+                self.socket.send(self._serialize_response(result))
             except Exception as e:
                 print(f"Error in server: {e}")
                 import traceback
 
                 print(traceback.format_exc())
-                self.socket.send(MsgSerializer.to_bytes({"error": str(e)}))
+                try:
+                    self.socket.send(self._serialize_response({"error": str(e)}))
+                except ValueError:
+                    # Keep the REP socket usable even when an exception message
+                    # itself is unexpectedly large.
+                    self.socket.send(
+                        MsgSerializer.to_bytes({"error": "Response exceeds configured limit"})
+                    )
 
     @staticmethod
-    def start_server(policy: BasePolicy, port: int, host: str = "*", api_token: str = None):
-        with PolicyServer(policy, host=host, port=port, api_token=api_token) as server:
+    def start_server(
+        policy: BasePolicy,
+        port: int,
+        host: str = "*",
+        api_token: str = None,
+        resource_limits: InferenceResourceLimits | None = None,
+    ):
+        with PolicyServer(
+            policy, host=host, port=port, api_token=api_token, resource_limits=resource_limits
+        ) as server:
             server.run()
 
 

@@ -23,6 +23,7 @@ import sys
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.types import ModalityConfig
 from gr00t.policy.gr00t_policy import Gr00tPolicy
+from gr00t.policy.policy import InferenceResourceLimits
 from gr00t.policy.replay_policy import ReplayPolicy
 from gr00t.policy.server_client import PolicyServer
 import tyro
@@ -87,9 +88,35 @@ class ServerConfig:
     use_sim_policy_wrapper: bool = False
     """Whether to use the sim policy wrapper"""
 
+    max_batch_size: int = 64
+    """Maximum observations processed by one request."""
+
+    max_image_height: int = 4096
+    """Maximum input image height in pixels."""
+
+    max_image_width: int = 4096
+    """Maximum input image width in pixels."""
+
+    max_image_pixels: int = 16_777_216
+    """Maximum input image area in pixels."""
+
+    max_text_bytes: int = 1_048_576
+    """Maximum UTF-8 bytes in one language instruction."""
+
+    max_response_bytes: int = 8 * 1024 * 1024
+    """Maximum serialized response size."""
+
 
 def main(config: ServerConfig):
     config.embodiment_tag = EmbodimentTag.resolve(config.embodiment_tag)
+    resource_limits = InferenceResourceLimits(
+        max_batch_size=config.max_batch_size,
+        max_image_height=config.max_image_height,
+        max_image_width=config.max_image_width,
+        max_image_pixels=config.max_image_pixels,
+        max_text_bytes=config.max_text_bytes,
+        max_response_bytes=config.max_response_bytes,
+    )
     print("Starting GR00T inference server...")
     print(f"  Embodiment tag: {config.embodiment_tag}")
     print(f"  Model path: {config.model_path}")
@@ -107,6 +134,7 @@ def main(config: ServerConfig):
             model_path=config.model_path,
             device=config.device,
             strict=config.strict,
+            resource_limits=resource_limits,
         )
     elif config.dataset_path is not None:
         if config.execution_horizon is None:
@@ -154,6 +182,7 @@ def main(config: ServerConfig):
             modality_configs=modality_configs,
             execution_horizon=config.execution_horizon,
             strict=config.strict,
+            resource_limits=resource_limits,
         )
     else:
         raise ValueError("Either model_path or dataset_path must be provided")
@@ -168,6 +197,7 @@ def main(config: ServerConfig):
         policy=policy,
         host=config.host,
         port=config.port,
+        resource_limits=resource_limits,
     ) as server:
         try:
             server.run()

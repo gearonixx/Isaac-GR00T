@@ -26,6 +26,7 @@ import threading
 import time
 
 from gr00t.data.types import ModalityConfig
+from gr00t.policy.policy import InferenceResourceLimits
 from gr00t.policy.server_client import MsgSerializer, PolicyClient, PolicyServer
 import msgpack
 import numpy as np
@@ -187,6 +188,38 @@ class TestPolicyServerAuth:
                 ) as valid_client:
                     valid_client.kill_server()
                 thread.join(timeout=3)
+
+
+def test_policy_server_rejects_oversized_response():
+    """A handler cannot force the server to serialize an unbounded reply."""
+    port = _find_free_port()
+    limits = InferenceResourceLimits(max_response_bytes=128)
+    with PolicyServer(
+        MockPolicy(), host="127.0.0.1", port=port, resource_limits=limits
+    ) as server:
+        server.register_endpoint("large", lambda: {"blob": "x" * 1024}, requires_input=False)
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        time.sleep(0.3)
+        with PolicyClient(host="127.0.0.1", port=port, timeout_ms=5000) as client:
+            with pytest.raises(RuntimeError, match="Response size"):
+                client.call_endpoint("large", requires_input=False)
+            client.kill_server()
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("field", [
+    "max_batch_size",
+    "max_image_height",
+    "max_image_width",
+    "max_image_pixels",
+    "max_text_bytes",
+    "max_response_bytes",
+])
+def test_resource_limits_require_positive_integers(field):
+    with pytest.raises(ValueError, match=field):
+        InferenceResourceLimits(**{field: 0})
 
 
 class TestMsgSerializer:
