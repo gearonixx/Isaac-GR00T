@@ -19,6 +19,8 @@ from huggingface_hub.errors import GatedRepoError
 import torch
 from transformers.feature_extraction_utils import BatchFeature
 
+from gr00t.security import reject_vulnerable_transformers_kernel_loader
+
 
 logger = logging.getLogger(__name__)
 
@@ -158,9 +160,10 @@ class Qwen3Backbone(torch.nn.Module):
             raise ImportError(
                 "Qwen3VLForConditionalGeneration is not available. "
                 "Please upgrade transformers to a version that supports Qwen3-VL: "
-                "pip install transformers>=4.57.0"
+                "pip install transformers>=5.3.0"
             )
 
+        reject_vulnerable_transformers_kernel_loader()
         super().__init__()
 
         # Add attention kwargs
